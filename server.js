@@ -7,11 +7,19 @@ const { Server } = require('socket.io');
 const bank = require('./data/content-bank');
 const extra = require('./data/extra-content');
 const media = require('./data/media');
+const filmService = require('./data/film-service');
+const newFilmPool = require('./data/film-pool');
 const bonus = require('./data/bonus-content');
 const expansion = require('./data/content-expansion');
 const pixelPool = require('./data/pixel-pool');
 const newGames = require('./data/new-games');
-const fmtCn = (() => { const s = String(bank.CODENAMES_WORDS.easy[0] || ''); return s === s.toLocaleUpperCase('tr') ? w => w.toLocaleUpperCase('tr') : w => w; })();
+const musicExpansion = require('./data/music-expansion');
+const visualGames = require('./data/visual-games');
+
+const fmtCn = (() => {
+  const s = String(bank.CODENAMES_WORDS.easy[0] || '');
+  return s === s.toLocaleUpperCase('tr') ? w => w.toLocaleUpperCase('tr') : w => w;
+})();
 const haveCn = new Set(Object.values(bank.CODENAMES_WORDS).flat().map(w => String(w).toLocaleLowerCase('tr')));
 for (const k of Object.keys(bonus)) {
   if (Array.isArray(bank[k])) { bank[k].push(...bonus[k]); continue; }
@@ -29,14 +37,18 @@ for (const k of Object.keys(expansion)) {
     }
   }
 }
+for (const k of ['TF_BANK','QUIZ_BANK','LIAR_BANK','EMOJI_BANK']) {
+  const extraRows = expansion[k + '_EXTRA'];
+  if (Array.isArray(extraRows)) bank[k].push(...extraRows);
+}
 
 const PORT = process.env.PORT || 3000;
 
-const MIX_ALLOWED = new Set(['tf', 'closest', 'quiz', 'liar', 'wyr', 'ml', 'emoji', 'song', 'film', 'pixel', 'wordle', 'kelimelik', 'bagdastirici', 'palavra', 'survey', 'bigger']);
+const MIX_ALLOWED = new Set(['tf', 'closest', 'quiz', 'liar', 'wyr', 'ml', 'emoji', 'song', 'film', 'pixel', 'wordle', 'kelimelik', 'bagdastirici', 'palavra', 'survey', 'bigger', 'logo', 'celebrity', 'celebritytr', 'celebrityworld', 'footballer', 'clublogo', 'flag', 'universe']);
 const MIX_FORBIDDEN = new Set(['codenames', 'werewolf', 'imposter']);
 const ALL_GAMES = new Set([
   'tf', 'closest', 'quiz', 'liar', 'wyr', 'ml', 'emoji',
-  'codenames', 'werewolf', 'imposter', 'song', 'film', 'pixel',
+  'codenames', 'werewolf', 'imposter', 'song', 'film', 'pixel', 'logo', 'celebrity', 'celebritytr', 'celebrityworld', 'footballer', 'clublogo', 'flag', 'universe',
   'wordle', 'kelimelik', 'bagdastirici', 'palavra', 'survey', 'bigger'
 ]);
 
@@ -46,19 +58,28 @@ const ABC = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const rooms = new Map();
 
 const customCatalog = {
-  music: [...bank.MUSIC_BANK.map(({ notes, ...m }) => m), ...extra.MUSIC],
-  films: [...bank.FILM_BANK.map(({ scenes, ...f }) => f), ...extra.FILMS],
+  music: (() => {
+    const all = [...bank.MUSIC_BANK.map(({ notes, ...m }) => m), ...extra.MUSIC, ...musicExpansion];
+    const seen = new Set();
+    return all.filter(m => {
+      const k = `${String(m.title).toLocaleLowerCase('tr')}|${String(m.artist).toLocaleLowerCase('tr')}`;
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
+  })(),
+  films: [...newFilmPool.films],
   imposter: [...bank.IMPOSTER_BANK],
   codenames: {
     easy: [...bank.CODENAMES_WORDS.easy],
     medium: [...bank.CODENAMES_WORDS.medium],
     hard: [...bank.CODENAMES_WORDS.hard],
   },
-  artistsTr: [...new Set([...bank.TURKISH_ARTISTS, ...extra.ARTISTS_TR])],
+  artistsTr: [...new Set([...bank.TURKISH_ARTISTS, ...extra.ARTISTS_TR, ...musicExpansion.map(x => x.artist)])],
   artistsEn: [...new Set([...bank.FOREIGN_ARTISTS, ...extra.ARTISTS_EN])],
   musicCategories: [...new Set([...bank.MUSIC_CATEGORIES, 'Türkçe Rock'])],
-  filmCategories: [...bank.FILM_CATEGORIES],
-  filmSeries: [...bank.FILM_SERIES],
+  filmCategories: [...newFilmPool.CATEGORIES],
+  filmSeries: [...newFilmPool.SERIES],
 };
 
 const newCode = () => {
@@ -107,9 +128,7 @@ const activePlayers = r => [...r.players.values()].filter(p => p.on);
 const allDone = r => {
   const act = activePlayers(r);
   if (!act.length) return false;
-  if (r.game === 'codenames' && r.cn) {
-    return false;
-  }
+  if (r.game === 'codenames' && r.cn) return false;
   return act.every(p => r.ans.has(akey(r, p)));
 };
 const me = s => {
@@ -154,7 +173,7 @@ function getFilteredMusic(r, diff) {
 
 function sanitizeFilmFilter(raw) {
   const f = raw && typeof raw === 'object' ? raw : {};
-  const categories = Array.isArray(f.categories) ? f.categories.map(x => String(x)).slice(0, 15) : [];
+  const categories = Array.isArray(f.categories) ? f.categories.map(x => String(x)).slice(0, 20) : [];
   const series = Array.isArray(f.series) ? f.series.map(x => String(x)).slice(0, 15) : [];
   const region = ['all', 'tr', 'hollywood'].includes(f.region) ? f.region : 'all';
   const minYear = f.minYear ? clamp(f.minYear, 1920, 2026, 1920) : null;
@@ -215,10 +234,7 @@ function initCodenames(r) {
     { name: 'Mavi', color: '#3b82f6', score: 0 }
   ];
   const shuffledPlayers = shuffle(ps);
-  shuffledPlayers.forEach((p, i) => {
-    p.team = i % 2;
-    p.spymaster = false;
-  });
+  shuffledPlayers.forEach((p, i) => { p.team = i % 2; p.spymaster = false; });
   const redSpies = shuffledPlayers.filter(p => p.team === 0);
   const blueSpies = shuffledPlayers.filter(p => p.team === 1);
   if (redSpies[0]) redSpies[0].spymaster = true;
@@ -244,20 +260,10 @@ function initCodenames(r) {
   const blueTotal = keyMap.filter(t => t === 'blue').length;
 
   r.cn = {
-    cards: chosenWords.map((word, idx) => ({
-      idx,
-      word,
-      type: keyMap[idx],
-      revealed: false,
-      byTeam: null
-    })),
-    turnTeam: firstTeam,
-    clue: null,
-    guessesLeft: 0,
-    redLeft: redTotal,
-    blueLeft: blueTotal,
-    winnerTeam: null,
-    reason: '',
+    cards: chosenWords.map((word, idx) => ({ idx, word, type: keyMap[idx], revealed: false, byTeam: null })),
+    turnTeam: firstTeam, clue: null, guessesLeft: 0,
+    redLeft: redTotal, blueLeft: blueTotal,
+    winnerTeam: null, reason: '',
     log: [`Oyun başladı! İlk sıra ${firstTeam === 0 ? 'Kırmızı' : 'Mavi'} takımda.`]
   };
   r.phase = 'question';
@@ -273,21 +279,14 @@ function initWerewolf(r) {
   while (rolePool.length < count) rolePool.push('villager');
 
   const assigned = shuffle(rolePool);
-  ps.forEach((p, idx) => {
-    p.role = assigned[idx];
-    p.alive = true;
-    p.score = 0;
-  });
+  ps.forEach((p, idx) => { p.role = assigned[idx]; p.alive = true; p.score = 0; });
 
   const nightSec = diffSec(r.cfg.time || 25, getActiveDifficulty(r));
   r.ww = {
-    dayNum: 1,
-    subPhase: 'night',
+    dayNum: 1, subPhase: 'night',
     nightActions: { wolfTarget: null, doctorSave: null, detectiveCheck: null },
     votes: new Map(),
-    lastNightSummary: '',
-    lastVoteSummary: '',
-    winner: null,
+    lastNightSummary: '', lastVoteSummary: '', winner: null,
     history: [`1. Gece başladı. Roller gizlice dağıtıldı (${wolfCount} Vampir, 1 Doktor, 1 Dedektif).`],
     durations: {
       night: clamp(r.cfg.wwNight, 10, 90, nightSec),
@@ -309,9 +308,7 @@ function checkWerewolfWin(r) {
     r.ww.winner = 'villagers';
     r.ww.subPhase = 'ended';
     r.ww.history.push('Tüm vampirler elendi! Köylüler kazandı.');
-    for (const p of r.players.values()) {
-      if (p.role !== 'werewolf') p.score += 150;
-    }
+    for (const p of r.players.values()) if (p.role !== 'werewolf') p.score += 150;
     finish(r);
     return true;
   }
@@ -319,9 +316,7 @@ function checkWerewolfWin(r) {
     r.ww.winner = 'werewolves';
     r.ww.subPhase = 'ended';
     r.ww.history.push('Vampirler sayısal üstünlüğü ele geçirdi! Vampirler kazandı.');
-    for (const p of r.players.values()) {
-      if (p.role === 'werewolf') p.score += 150;
-    }
+    for (const p of r.players.values()) if (p.role === 'werewolf') p.score += 150;
     finish(r);
     return true;
   }
@@ -378,12 +373,8 @@ function resolveWerewolfVote(r) {
   let topVotes = 0;
   let topIds = [];
   for (const [tid, c] of counts) {
-    if (c > topVotes) {
-      topVotes = c;
-      topIds = [tid];
-    } else if (c === topVotes) {
-      topIds.push(tid);
-    }
+    if (c > topVotes) { topVotes = c; topIds = [tid]; }
+    else if (c === topVotes) { topIds.push(tid); }
   }
 
   let vSummary = '';
@@ -433,15 +424,9 @@ function initImposter(r) {
 
   const sec = diffSec(r.cfg.time || 30, diff);
   r.imp = {
-    category: pick.c,
-    commonWord: pick.common,
-    imposterWord: pick.imposter,
-    impCount,
-    clues: [],
-    votes: new Map(),
-    subPhase: 'clues',
-    guessAttempted: false,
-    winnerSide: null,
+    category: pick.c, commonWord: pick.common, imposterWord: pick.imposter,
+    impCount, clues: [], votes: new Map(), subPhase: 'clues',
+    guessAttempted: false, winnerSide: null,
   };
   r.phase = 'question';
   r.round = 1;
@@ -467,12 +452,8 @@ function resolveImposterVote(r) {
   let maxV = 0;
   let topIds = [];
   for (const [tid, c] of tally) {
-    if (c > maxV) {
-      maxV = c;
-      topIds = [tid];
-    } else if (c === maxV) {
-      topIds.push(tid);
-    }
+    if (c > maxV) { maxV = c; topIds = [tid]; }
+    else if (c === maxV) topIds.push(tid);
   }
   const caught = topIds.length === 1 && maxV > 0 && r.players.get(topIds[0]) && r.players.get(topIds[0]).isImposter;
   if (caught) {
@@ -499,8 +480,7 @@ function finalizeImposterResult(r, crewWon) {
     const pts = crewWon ? (!p.isImposter ? 120 : 0) : (p.isImposter ? 150 : 0);
     p.score += pts;
     rows.push({
-      n: p.name,
-      av: p.av,
+      n: p.name, av: p.av,
       v: (p.isImposter ? '🕵️ Imposter (' : '✅ Ortak (') + (p.secretWord || '') + ')',
       pts
     });
@@ -548,7 +528,6 @@ function pickNonRepeating(pool, prefix, usedSet) {
   return chosen;
 }
 
-
 function beginPalavraVote(r) {
   if (!r || r.phase !== 'question' || r.game !== 'palavra' || !r.palavra || r.palavra.phase !== 'bluff') return;
   const entries = shuffle([{ text: r.palavra.real, owner: null }, ...[...r.palavra.fake.entries()].map(([owner, text]) => ({ text, owner }))]);
@@ -568,26 +547,14 @@ function startRound(r) {
   const gameId = getActiveGameId(r);
   r.game = gameId;
 
-  if (gameId === 'codenames') {
-    initCodenames(r);
-    push(r);
-    return;
-  }
-  if (gameId === 'werewolf') {
-    initWerewolf(r);
-    push(r);
-    return;
-  }
-  if (gameId === 'imposter') {
-    initImposter(r);
-    push(r);
-    return;
-  }
+  if (gameId === 'codenames') { initCodenames(r); push(r); return; }
+  if (gameId === 'werewolf')  { initWerewolf(r);  push(r); return; }
+  if (gameId === 'imposter')  { initImposter(r);  push(r); return; }
 
   r.round++;
   const diff = getActiveDifficulty(r);
   const baseSec = clamp(r.cfg.time, 10, 60, 20);
-  const sec = diffSec(baseSec, diff);
+  const sec = gameId === 'wordle' ? Math.max(75, diffSec(baseSec, diff)) : diffSec(baseSec, diff);
 
   r.ans = new Map();
   r.phase = 'question';
@@ -616,6 +583,8 @@ function startRound(r) {
   } else if (gameId === 'emoji') {
     const item = pickNonRepeating(byCat(filterByDiff(bank.EMOJI_BANK, diff), r), 'em', r.usedKeys);
     r.q = { t: item.t, v: item.x, a: item.a, x: `Cevap: ${item.x}`, c: item.c, u: '' };
+  } else if (['logo', 'celebrity', 'celebritytr', 'celebrityworld', 'footballer', 'clublogo', 'flag', 'universe'].includes(gameId)) {
+    return startVisualRound(r, gameId, sec, diff);
   } else if (gameId === 'wordle') {
     const requested = clamp(r.cfg.wordLength, 4, 7, 5);
     const pool = (newGames.WORDS[diff] || newGames.WORDS.medium).filter(w => [...w].length === requested);
@@ -668,13 +637,128 @@ function startRound(r) {
     return startMediaRound(r, gameId, sec, diff);
   }
 
-  r.timer = setTimeout(() => { if (gameId === 'palavra' && r.palavra && r.palavra.phase === 'bluff') beginPalavraVote(r); else reveal(r); }, sec * 1000 + 400);
+  r.timer = setTimeout(() => {
+    if (gameId === 'palavra' && r.palavra && r.palavra.phase === 'bluff') beginPalavraVote(r);
+    else reveal(r);
+  }, sec * 1000 + 400);
+  push(r);
+}
+
+async function startVisualRound(r, gameId, sec, diff) {
+  const round = r.round;
+  const token = (r.vtoken = (r.vtoken || 0) + 1);
+  r.q = { loading: true, t: '⏳ Görsel hazırlanıyor…', c: '' };
+  r.deadline = Date.now() + 45000;
+  push(r);
+  const alive = () => r.phase === 'question' && r.round === round && r.vtoken === token;
+  const pools = { logo: visualGames.LOGOS, celebrity: [...visualGames.PEOPLE_TR, ...visualGames.PEOPLE_WORLD], celebritytr: visualGames.PEOPLE_TR, celebrityworld: visualGames.PEOPLE_WORLD, footballer: visualGames.FOOTBALLERS, clublogo: visualGames.CLUBS, flag: visualGames.FLAGS, universe: visualGames.UNIVERSE };
+  const pool = pools[gameId];
+  let item = null, image = null;
+  for (let i = 0; i < Math.min(8, pool.length) && !image; i++) {
+    item = pickNonRepeating(pool, 'vg-' + gameId, r.usedKeys);
+    image = item.image || await media.resolveVisual(item);
+    if (!alive()) return;
+  }
+  if (!item || (gameId !== 'universe' && !image)) {
+    r.q = { t: 'Bu tur için görsel yüklenemedi; sonraki tura geçiliyor.', o: ['Tamam', 'Geç'], v: 0, c: 'Görsel kaynağı' };
+    push(r); r.timer = setTimeout(() => reveal(r), 1800); return;
+  }
+  if (gameId === 'universe') {
+    r.q = { t: item.t, o: shuffle(item.o.map((x,i)=>({x,i}))).map(x=>x.x), v: 0, x: item.x, c: item.c };
+    const correct = item.o[item.v]; r.q.v = r.q.o.indexOf(correct);
+  } else {
+    const correct = item.answer;
+    const distractors = shuffle(pool.filter(x => x.id !== item.id).map(x => x.answer).filter(Boolean)).filter(x => x !== correct).slice(0, 3);
+    const opts = shuffle([...new Set([correct, ...distractors])]);
+    while (opts.length < 4) opts.push(['Bilinmiyor','Başka bir seçenek','Hiçbiri'][opts.length-1]);
+    r.q = { t: item.t, image, o: opts, v: opts.indexOf(correct), x: `Doğru cevap: ${correct}`, c: item.c };
+  }
+  r.activeSec = sec; r.deadline = Date.now() + sec * 1000;
+  r.timer = setTimeout(() => reveal(r), sec * 1000 + 300);
   push(r);
 }
 
 const FRAME_PTS = [100, 80, 60, 40, 20];
 
+// ==== YENİ: Kareden Film Bilme (TMDB tabanlı) ====
+async function startFilmRound(r, sec, diff) {
+  const round = r.round;
+  const token = (r.mtoken = (r.mtoken || 0) + 1);
+  r.penaltyUntil = new Map();
+  r.q = { loading: true, t: '⏳ Film hazırlanıyor…', c: '', u: '' };
+  r.deadline = Date.now() + 60000;
+  push(r);
+  const alive = () => r.phase === 'question' && r.round === round && r.mtoken === token;
+
+  if (!filmService.hasKey()) {
+    r.q = { t: '⚠️ Film oyunu için TMDB anahtarı tanımlı değil. Sunucu ortam değişkenine TMDB_API_KEY ekleyin.', o: ['Tamam'], v: 0, c: 'Yapılandırma', x: '' };
+    push(r);
+    r.timer = setTimeout(() => reveal(r), 2500);
+    return;
+  }
+
+  const pool = getFilteredFilms(r, diff);
+  let q = null;
+  const started = Date.now();
+  for (let i = 0; i < 8 && !q && (Date.now() - started < 30000); i++) {
+    const item = pickNonRepeating(pool, 'fm', r.usedKeys);
+    let res = null;
+    try { res = await filmService.resolveFilmScenes(item, 5); } catch { res = null; }
+    if (!alive()) return;
+    if (!res || !res.sceneUrls || !res.sceneUrls.length) continue;
+
+    const allTitles = [res.title, res.originalTitle, item.title, item.trTitle, ...(item.answers || [])]
+      .filter(Boolean)
+      .map(filmService.normTitle)
+      .filter((v, i, a) => v && a.indexOf(v) === i);
+
+    const scenesList = res.sceneUrls.map((url, k) => ({ label: 'Sahne ' + (k + 1), img: url }));
+    const stepMs = Math.max(2500, Math.floor((sec * 1000) / Math.max(1, scenesList.length)));
+    q = {
+      t: '🎬 Kareye bak ve filmi tahmin et!',
+      c: (item.categories && item.categories[0]) || 'Sinema',
+      u: '',
+      filmId: item.id,
+      tmdbId: res.tmdbId,
+      title: res.title,
+      year: res.year,
+      answers: allTitles,
+      scenes: scenesList,
+      sceneIndex: 0,
+      stepMs,
+      nextAt: Date.now() + 3000 + stepMs,
+    };
+  }
+
+  if (!q) {
+    r.q = { t: '⚠️ Bu tur için doğrulanmış görseli olan film bulunamadı; sonraki tura geçiliyor.', c: '', u: '' };
+    push(r);
+    r.timer = setTimeout(() => startRound(r), 2500);
+    return;
+  }
+
+  const lead = 3000;
+  r.q = q;
+  r.activeSec = sec;
+  r.deadline = Date.now() + lead + sec * 1000;
+
+  clearTimeout(r.sceneTimer);
+  r.sceneTimer = setTimeout(function step() {
+    if (!alive() || !r.q.scenes) return;
+    if (r.q.sceneIndex < r.q.scenes.length - 1) {
+      r.q.sceneIndex++;
+      r.q.nextAt = r.q.sceneIndex < r.q.scenes.length - 1 ? Date.now() + r.q.stepMs : 0;
+      push(r);
+      if (r.q.nextAt) r.sceneTimer = setTimeout(step, r.q.stepMs);
+    }
+  }, lead + q.stepMs);
+
+  r.timer = setTimeout(() => reveal(r), lead + sec * 1000 + 400);
+  push(r);
+}
+
 async function startMediaRound(r, gameId, sec, diff) {
+  if (gameId === 'film') return startFilmRound(r, sec, diff);
   const round = r.round;
   const token = (r.mtoken = (r.mtoken || 0) + 1);
   r.penaltyUntil = new Map();
@@ -682,12 +766,12 @@ async function startMediaRound(r, gameId, sec, diff) {
   r.deadline = Date.now() + 60000;
   push(r);
   const alive = () => r.phase === 'question' && r.round === round && r.mtoken === token;
-  const pool = gameId === 'song' ? getFilteredMusic(r, diff) : gameId === 'pixel' ? getPixelPool(r, diff) : getFilteredFilms(r, diff);
+  const pool = gameId === 'song' ? getFilteredMusic(r, diff) : getPixelPool(r, diff);
   let q = null;
   for (let i = 0; i < 6 && !q; i++) {
-    const item = pickNonRepeating(pool, gameId === 'song' ? 'sg' : gameId === 'pixel' ? 'px' : 'fm', r.usedKeys);
+    const item = pickNonRepeating(pool, gameId === 'song' ? 'sg' : 'px', r.usedKeys);
     let res = null;
-    try { res = gameId === 'song' ? await media.resolveSong(item) : gameId === 'pixel' ? await media.resolvePixel(item) : await media.resolveFilm(item); } catch (e) { res = null; }
+    try { res = gameId === 'song' ? await media.resolveSong(item) : await media.resolvePixel(item); } catch { res = null; }
     if (!alive()) return;
     if (!res) continue;
     if (gameId === 'song') {
@@ -697,25 +781,18 @@ async function startMediaRound(r, gameId, sec, diff) {
         songId: item.id, artist: item.artist, title: item.title, audio: res, clipSec,
         seek: crypto.randomInt(Math.max(1, 29 - clipSec)), playAt: Date.now() + 3000
       };
-    } else if (gameId === 'pixel') {
-      const stepMs = Math.max(3000, Math.floor((sec * 1000) / 5));
+    } else {
+      const stepMs = Math.max(900, Math.floor((sec * 1000) / 7));
       q = {
         t: '🧩 Pikseller açıldıkça kim olduğunu bul!', c: item.c, u: '',
         filmId: item.id, title: item.name, year: '', answers: item.ans,
         scenes: [10, 18, 30, 54, 0].map((cells, k) => ({ label: 'Seviye ' + (k + 1), img: res[k], cells })),
-        sceneIndex: 0, stepMs, nextAt: Date.now() + 3000 + stepMs
-      };
-    } else {
-      const stepMs = Math.max(3000, Math.floor((sec * 1000) / res.length));
-      q = {
-        t: '🎬 Kareye bak ve filmi tahmin et!', c: item.categories[0] || 'Sinema', u: '',
-        filmId: item.id, title: item.title, year: item.year, answers: item.answers || [item.title],
-        scenes: res.map((img, k) => ({ label: 'Kare ' + (k + 1), img })), sceneIndex: 0, stepMs, nextAt: Date.now() + 3000 + stepMs
+        sceneIndex: 0, stepMs, nextAt: Date.now() + 1000 + stepMs
       };
     }
   }
   if (!q) {
-    r.q = { t: gameId === 'film' ? '⚠️ Bu film için sahne görseli bulunamadı; tur atlanıyor.' : '⚠️ Medya kaynağı bulunamadı; tur atlanıyor.', c: '', u: '', title: 'Kaynak bulunamadı', artist: '-', year: '-', scenes: [], sceneIndex: 0, answers: [] };
+    r.q = { t: gameId === 'pixel' ? '⚠️ Medya kaynağı bulunamadı; tur atlanıyor.' : '⚠️ Medya kaynağı bulunamadı; tur atlanıyor.', c: '', u: '', title: 'Kaynak bulunamadı', artist: '-', year: '-', scenes: [], sceneIndex: 0, answers: [] };
     push(r);
     r.timer = setTimeout(() => reveal(r), 2000);
     return;
@@ -724,7 +801,7 @@ async function startMediaRound(r, gameId, sec, diff) {
   r.q = q;
   r.activeSec = sec;
   r.deadline = Date.now() + lead + sec * 1000;
-  if (gameId === 'film' || gameId === 'pixel') {
+  if (gameId === 'pixel') {
     clearTimeout(r.sceneTimer);
     r.sceneTimer = setTimeout(function step() {
       if (!alive() || !r.q.scenes) return;
@@ -734,7 +811,7 @@ async function startMediaRound(r, gameId, sec, diff) {
         push(r);
         if (r.q.nextAt) r.sceneTimer = setTimeout(step, r.q.stepMs);
       }
-    }, lead + q.stepMs);
+    }, lead + 1000);
   }
   r.timer = setTimeout(() => reveal(r), lead + sec * 1000 + 400);
   push(r);
@@ -767,17 +844,38 @@ function reveal(r) {
     revVal = r.bag.accepted.join(' · '); revExtra = 'Oda sahibi tarafından kabul edilen cevaplar puan kazandı.';
   } else if (g === 'palavra' && r.palavra) {
     const tally = new Map();
-    for (const [pid,idx] of r.palavra.votes) { const fakeOwner = r.palavra.optionOwners[idx]; if (fakeOwner) tally.set(fakeOwner,(tally.get(fakeOwner)||0)+1); if (idx === r.palavra.correctIndex) { const p=r.players.get(pid); if(p){givePoints(r,p,100); rows.push({n:p.name,av:p.av,v:'Gerçek cevabı buldu',pts:100});} } }
-    for (const [pid] of r.palavra.fake) { const p=r.players.get(pid); if(!p) continue; const fooled=tally.get(pid)||0; const pts=fooled*50; if(pts) givePoints(r,p,pts); rows.push({n:p.name,av:p.av,v:`${fooled} kişi cevabına inandı`,pts}); }
+    for (const [pid,idx] of r.palavra.votes) {
+      const fakeOwner = r.palavra.optionOwners[idx];
+      if (fakeOwner) tally.set(fakeOwner,(tally.get(fakeOwner)||0)+1);
+      if (idx === r.palavra.correctIndex) {
+        const p=r.players.get(pid);
+        if(p){givePoints(r,p,100); rows.push({n:p.name,av:p.av,v:'Gerçek cevabı buldu',pts:100});}
+      }
+    }
+    for (const [pid] of r.palavra.fake) {
+      const p=r.players.get(pid); if(!p) continue;
+      const fooled=tally.get(pid)||0; const pts=fooled*50;
+      if(pts) givePoints(r,p,pts);
+      rows.push({n:p.name,av:p.av,v:`${fooled} kişi cevabına inandı`,pts});
+    }
     r.palavra.results = r.palavra.options.map((text,i)=>({text,real:i===r.palavra.correctIndex,owner:r.palavra.optionOwners[i] ? (r.players.get(r.palavra.optionOwners[i])||{}).name : null}));
     revVal = r.palavra.real; revExtra = 'Gerçek cevap ve anonim oyuncu cevapları açıldı.';
   } else if (g === 'survey') {
     cnt = Array((q.o || []).length).fill(0);
     const scoreByText = q.scores || {};
-    for (const [pid,a] of r.ans) { const p=r.players.get(pid); if(!p) continue; const text=q.o[a.v]; const pts=clamp(scoreByText[text],0,100,0)*2; givePoints(r,p,pts); cnt[a.v]++; rows.push({n:p.name,av:p.av,v:a.v,pts}); }
+    for (const [pid,a] of r.ans) {
+      const p=r.players.get(pid); if(!p) continue;
+      const text=q.o[a.v];
+      const pts=clamp(scoreByText[text],0,100,0)*2;
+      givePoints(r,p,pts);
+      cnt[a.v]++;
+      rows.push({n:p.name,av:p.av,v:a.v,pts});
+    }
     revVal = null; revExtra = 'Oyun için hazırlanmış anket puanlarıdır; gerçek anket sonucu değildir.';
-  } else if (g === 'tf' || g === 'quiz' || g === 'liar' || g === 'bigger') {
+  } else if (g === 'tf' || g === 'quiz' || g === 'liar' || g === 'bigger' || ['logo','celebrity','celebritytr','celebrityworld','footballer','clublogo','flag','universe'].includes(g)) {
     cnt = Array((q.o || []).length).fill(0);
+    revVal = ['logo','celebrity','celebritytr','celebrityworld','footballer','clublogo','flag','universe'].includes(g) ? (q.o && q.o[q.v] != null ? q.o[q.v] : null) : g === 'bigger' ? q.v : null;
+    revExtra = q.x || '';
     for (const [pid, a] of r.ans) {
       const p = r.players.get(pid);
       if (!p) continue;
@@ -790,9 +888,7 @@ function reveal(r) {
     }
   } else if (g === 'wyr' || g === 'ml') {
     cnt = Array((q.o || []).length).fill(0);
-    for (const [, a] of r.ans) {
-      if (typeof a.v === 'number' && cnt[a.v] != null) cnt[a.v]++;
-    }
+    for (const [, a] of r.ans) if (typeof a.v === 'number' && cnt[a.v] != null) cnt[a.v]++;
     let maxC = 0;
     for (const c of cnt) if (c > maxC) maxC = c;
     const majSet = new Set();
@@ -823,9 +919,7 @@ function reveal(r) {
       return { n: p.name, av: p.av, v: x.a.v, pts };
     }).filter(Boolean);
   } else if (g === 'emoji' || g === 'song' || g === 'film' || g === 'pixel') {
-    const corr = [...r.ans.entries()]
-      .filter(([, a]) => a.ok)
-      .sort((a, b) => a[1].t - b[1].t);
+    const corr = [...r.ans.entries()].filter(([, a]) => a.ok).sort((a, b) => a[1].t - b[1].t);
     const rankPts = [100, 70, 50];
     corr.forEach(([pid, a], idx) => {
       const p = r.players.get(pid);
@@ -840,16 +934,9 @@ function reveal(r) {
         if (p) rows.push({ n: p.name, av: p.av, c: null, v: a.v, pts: 0 });
       }
     }
-    if (g === 'song') {
-      revVal = `${q.title} — ${q.artist}`;
-      revExtra = `Tür: ${q.c}`;
-    } else if (g === 'pixel') {
-      revVal = q.title;
-      revExtra = `Açılan seviye: ${q.sceneIndex + 1}/${q.scenes.length}`;
-    } else if (g === 'film') {
-      revVal = `${q.title} (${q.year})`;
-      revExtra = `Açılan kare: ${q.sceneIndex + 1}/${q.scenes.length}`;
-    }
+    if (g === 'song') { revVal = `${q.title} — ${q.artist}`; revExtra = `Tür: ${q.c}`; }
+    else if (g === 'pixel') { revVal = q.title; revExtra = `Açılan seviye: ${q.sceneIndex + 1}/${q.scenes.length}`; }
+    else if (g === 'film') { revVal = q.title; revExtra = `Açılan kare: ${q.sceneIndex + 1}/${q.scenes.length} · Yıl: ${q.year}`; }
   }
 
   rows.sort((a, b) => b.pts - a.pts);
@@ -861,9 +948,8 @@ function reveal(r) {
     const perGame = r.mix.roundsPerGame || 2;
     const totalSteps = r.mix.games.length * perGame;
     r.mix.completedRounds++;
-    if (r.mix.completedRounds >= totalSteps) {
-      nextAction = () => finish(r);
-    } else {
+    if (r.mix.completedRounds >= totalSteps) nextAction = () => finish(r);
+    else {
       r.mix.step = Math.floor(r.mix.completedRounds / perGame) % r.mix.games.length;
       nextAction = () => startRound(r);
     }
@@ -894,23 +980,12 @@ function toLobby(r) {
   clearTimeout(r.kelimeHintTimer);
   r.phase = 'lobby';
   r.round = 0;
-  r.cn = null;
-  r.ww = null;
-  r.imp = null;
-  r.mix = null;
-  r.q = null;
-  r.rev = null;
+  r.cn = null; r.ww = null; r.imp = null; r.mix = null; r.q = null; r.rev = null;
   r.teams = [];
   r.mode = 'solo';
   for (const p of r.players.values()) {
-    p.score = 0;
-    p.team = null;
-    p.spymaster = false;
-    p.role = null;
-    p.alive = true;
-    p.isImposter = false;
-    p.secretWord = null;
-    p.ready = false;
+    p.score = 0; p.team = null; p.spymaster = false; p.role = null; p.alive = true;
+    p.isImposter = false; p.secretWord = null; p.ready = false;
   }
   push(r);
 }
@@ -938,18 +1013,9 @@ function addPlayer(r, name, s) {
     key: crypto.randomBytes(12).toString('hex'),
     name: clean(name, 12) || 'Oyuncu',
     av: AV.find(a => !used.has(a)) || '🎉',
-    sid: s.id,
-    on: true,
-    off: 0,
-    ready: false,
-    team: null,
-    spymaster: false,
-    role: null,
-    alive: true,
-    isImposter: false,
-    secretWord: null,
-    score: 0,
-    night: 0
+    sid: s.id, on: true, off: 0, ready: false,
+    team: null, spymaster: false, role: null, alive: true,
+    isImposter: false, secretWord: null, score: 0, night: 0
   };
   r.players.set(p.id, p);
   s.data.code = r.code;
@@ -979,16 +1045,9 @@ function buildView(r, p) {
     round: r.round,
     teams: r.teams,
     players: [...r.players.values()].map(x => ({
-      id: x.id,
-      name: x.name,
-      av: x.av,
-      team: x.team,
-      spymaster: Boolean(x.spymaster),
-      alive: x.alive !== false,
-      score: x.score,
-      night: x.night,
-      ready: x.ready,
-      on: x.on,
+      id: x.id, name: x.name, av: x.av, team: x.team,
+      spymaster: Boolean(x.spymaster), alive: x.alive !== false,
+      score: x.score, night: x.night, ready: x.ready, on: x.on,
       done: r.phase === 'question' && r.ans && r.ans.has(akey(r, x))
     })),
     left: r.phase === 'question' ? Math.max(0, r.deadline - Date.now()) : 0,
@@ -1008,21 +1067,13 @@ function buildView(r, p) {
   if (r.phase === 'question' || r.phase === 'reveal') {
     if (r.game === 'codenames' && r.cn) {
       base.cn = {
-        turnTeam: r.cn.turnTeam,
-        clue: r.cn.clue,
-        guessesLeft: r.cn.guessesLeft,
-        redLeft: r.cn.redLeft,
-        blueLeft: r.cn.blueLeft,
-        winnerTeam: r.cn.winnerTeam,
-        reason: r.cn.reason,
+        turnTeam: r.cn.turnTeam, clue: r.cn.clue, guessesLeft: r.cn.guessesLeft,
+        redLeft: r.cn.redLeft, blueLeft: r.cn.blueLeft,
+        winnerTeam: r.cn.winnerTeam, reason: r.cn.reason,
         log: r.cn.log.slice(-8),
-        isSpymaster: Boolean(p.spymaster),
-        myTeam: p.team,
+        isSpymaster: Boolean(p.spymaster), myTeam: p.team,
         cards: r.cn.cards.map(c => ({
-          idx: c.idx,
-          word: c.word,
-          revealed: c.revealed,
-          byTeam: c.byTeam,
+          idx: c.idx, word: c.word, revealed: c.revealed, byTeam: c.byTeam,
           type: (c.revealed || p.spymaster) ? c.type : undefined
         }))
       };
@@ -1031,19 +1082,14 @@ function buildView(r, p) {
       let detectiveResult = null;
       if (p.role === 'detective' && r.ww.nightActions.detectiveCheck) {
         const target = r.players.get(r.ww.nightActions.detectiveCheck);
-        if (target) {
-          detectiveResult = `${target.name}: ${target.role === 'werewolf' ? '🐺 VAMPİR' : '🏡 VAMPİR DEĞİL'}`;
-        }
+        if (target) detectiveResult = `${target.name}: ${target.role === 'werewolf' ? '🐺 VAMPİR' : '🏡 VAMPİR DEĞİL'}`;
       }
       base.ww = {
-        dayNum: r.ww.dayNum,
-        subPhase: r.ww.subPhase,
-        myRole: p.role,
-        alive: p.alive,
+        dayNum: r.ww.dayNum, subPhase: r.ww.subPhase,
+        myRole: p.role, alive: p.alive,
         lastNightSummary: r.ww.lastNightSummary,
         lastVoteSummary: r.ww.lastVoteSummary,
-        winner: r.ww.winner,
-        history: r.ww.history.slice(-10),
+        winner: r.ww.winner, history: r.ww.history.slice(-10),
         detectiveResult,
         votedCount: r.ww.votes ? r.ww.votes.size : 0,
         myVote: r.ww.votes ? r.ww.votes.get(p.id) || null : null
@@ -1054,10 +1100,8 @@ function buildView(r, p) {
       };
     } else if (r.game === 'imposter' && r.imp) {
       base.imp = {
-        category: r.imp.category,
-        subPhase: r.imp.subPhase,
-        myWord: p.secretWord || '',
-        isImposter: Boolean(p.isImposter),
+        category: r.imp.category, subPhase: r.imp.subPhase,
+        myWord: p.secretWord || '', isImposter: Boolean(p.isImposter),
         clues: r.imp.clues,
         votedCount: r.imp.votes ? r.imp.votes.size : 0,
         myVote: r.imp.votes ? r.imp.votes.get(p.id) || null : null,
@@ -1068,29 +1112,24 @@ function buildView(r, p) {
       base.q = { t: r.q.t, c: '', u: '', loading: true };
     } else if (r.game === 'song' && r.q) {
       base.q = {
-        t: r.q.t,
-        c: r.q.c,
-        u: r.q.u || '',
-        clipSec: r.q.clipSec,
-        audio: r.q.audio,
-        seek: r.q.seek,
-        playAt: r.q.playAt,
-        serverNow: Date.now(),
+        t: r.q.t, c: r.q.c, u: r.q.u || '',
+        clipSec: r.q.clipSec, audio: r.q.audio,
+        seek: r.q.seek, playAt: r.q.playAt, serverNow: Date.now(),
         penaltyLeft: (r.penaltyUntil && r.penaltyUntil.get(p.id)) ? Math.max(0, r.penaltyUntil.get(p.id) - Date.now()) : 0
       };
     } else if ((r.game === 'film' || r.game === 'pixel') && r.q) {
       const idx = Math.min(r.q.sceneIndex || 0, r.q.scenes.length - 1);
       base.q = {
-        t: r.q.t,
-        c: r.q.c,
-        u: r.q.u || '',
-        sceneIndex: idx,
-        serverNow: Date.now(),
-        nextAt: r.q.nextAt || 0,
+        t: r.q.t, c: r.q.c, u: r.q.u || '',
+        sceneIndex: idx, serverNow: Date.now(), nextAt: r.q.nextAt || 0,
         penaltyLeft: (r.penaltyUntil && r.penaltyUntil.get(p.id)) ? Math.max(0, r.penaltyUntil.get(p.id) - Date.now()) : 0,
         totalScenes: r.q.scenes.length,
         unlockedScenes: r.q.scenes.slice(0, idx + 1)
       };
+    } else if (['logo','celebrity','celebritytr','celebrityworld','footballer','clublogo','flag','universe'].includes(r.game) && r.q && r.q.loading) {
+      base.q = { t: r.q.t, c: r.q.c || '', loading: true };
+    } else if (['logo','celebrity','celebritytr','celebrityworld','footballer','clublogo','flag','universe'].includes(r.game) && r.q) {
+      base.q = { t: r.q.t, c: r.q.c, o: r.q.o, image: r.q.image || '', x: r.phase === 'reveal' ? (r.q.x || '') : '' };
     } else if (r.game === 'wordle' && r.q && r.wordle) {
       base.wordle = { length: r.q.length, maxAttempts: r.wordle.maxAttempts, guesses: r.wordle.guesses.get(p.id) || [], solved: r.wordle.solved.has(p.id), solvedCount: r.wordle.solved.size, playerCount: r.players.size };
       base.q = { t: r.q.t, c: r.q.c, length: r.q.length };
@@ -1110,15 +1149,12 @@ function buildView(r, p) {
       base.q = { t: r.q.t, o: r.q.o, c: r.q.c, u: r.q.u || '', x: r.q.x || '' };
     }
   }
-
   return base;
 }
 
 function push(r) {
   for (const p of r.players.values()) {
-    if (p.on && p.sid) {
-      io.to(p.sid).emit('s', buildView(r, p));
-    }
+    if (p.on && p.sid) io.to(p.sid).emit('s', buildView(r, p));
   }
 }
 
@@ -1135,13 +1171,18 @@ function checkTextGuessMatch(gameId, q, rawText) {
     return (t && (guess.includes(t) || partial(t, guess))) || (guess.includes(a) && guess.length > a.length + 2);
   }
   if (gameId === 'film' || gameId === 'pixel') {
-    return (q.answers || []).some(ans => { const x = norm(ans); return x && (guess.includes(x) || partial(x, guess)); });
+    return (q.answers || []).some(ans => {
+      const x = norm(ans);
+      if (!x) return false;
+      if (x.length < 4) return guess === x || guess.split(/\s+/).includes(x);
+      return guess.includes(x) || partial(x, guess);
+    });
   }
   if (gameId === 'kelimelik') { const x = norm(q._answer); return Boolean(x && guess === x); }
   return false;
 }
 
-const srv = http.createServer((req, res) => {
+const srv = http.createServer(async (req, res) => {
   const urlPath = (req.url || '/').split('?')[0];
   if (urlPath === '/healthz') {
     res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
@@ -1153,12 +1194,22 @@ const srv = http.createServer((req, res) => {
     return res.end(JSON.stringify({ pool: pixelPool.length, ...media.pixelStats() }));
   }
   if (urlPath === '/media-status') {
+    const fs2 = await filmService.status();
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
     return res.end(JSON.stringify({
       ...media.mediaStatus(),
+      filmService: fs2,
       musicCatalogCount: customCatalog.music.length,
       filmCatalogCount: customCatalog.films.length,
-    }));
+    }, null, 2));
+  }
+  if (urlPath === '/film-test') {
+    const u = new URL(req.url, 'http://x');
+    const title = u.searchParams.get('title') || 'Inception';
+    const year = parseInt(u.searchParams.get('year') || '2010', 10);
+    const out = await filmService.testFilm(title, year);
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    return res.end(JSON.stringify(out, null, 2));
   }
   if (urlPath === '/catalog') {
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -1170,7 +1221,8 @@ const srv = http.createServer((req, res) => {
       filmCategories: customCatalog.filmCategories,
       filmSeries: customCatalog.filmSeries,
       filmCount: customCatalog.films.length,
-      tmdb: media.hasTmdb(),
+      visualCounts: { logos: visualGames.LOGOS.length, turkishCelebrities: visualGames.PEOPLE_TR.length, foreignCelebrities: visualGames.PEOPLE_WORLD.length, footballers: visualGames.FOOTBALLERS.length, clubLogos: visualGames.CLUBS.length, flags: visualGames.FLAGS.length, universe: visualGames.UNIVERSE.length },
+      tmdb: filmService.hasKey(),
       qCats: Object.fromEntries(Object.keys(QCAT_BANK).map(g => [g, [...new Set(gameCats(g))]])),
       pixelCats: [...new Set(pixelPool.map(x => x.c))],
       pixelCount: pixelPool.length,
@@ -1187,31 +1239,17 @@ io.on('connection', s => {
     if (s.data.code || typeof cb !== 'function') return;
     const code = newCode();
     const r = {
-      code,
-      host: null,
-      players: new Map(),
-      seq: 0,
-      phase: 'lobby',
-      game: 'tf',
-      mode: 'solo',
+      code, host: null, players: new Map(), seq: 0,
+      phase: 'lobby', game: 'tf', mode: 'solo',
       cfg: {
-        difficulty: 'medium',
-        rounds: 5,
-        time: 20,
-        teams: 2,
-        imposterCount: 1,
-        imposterGuessBonus: true,
-        wordLength: 5,
-        kelimeCategory: 'Tümü',
-        biggerCategory: '',
+        difficulty: 'medium', rounds: 5, time: 20, teams: 2,
+        imposterCount: 1, imposterGuessBonus: true,
+        wordLength: 5, kelimeCategory: 'Tümü', biggerCategory: '',
         musicFilter: sanitizeMusicFilter({}),
         filmFilter: sanitizeFilmFilter({}),
       },
-      mix: null,
-      teams: [],
-      round: 0,
-      ans: new Map(),
-      usedKeys: new Set(),
+      mix: null, teams: [], round: 0,
+      ans: new Map(), usedKeys: new Set(), usedSceneUrls: new Set(),
       idle: Date.now()
     };
     rooms.set(code, r);
@@ -1236,21 +1274,15 @@ io.on('connection', s => {
     const r = rooms.get(String(code || '').toUpperCase().trim());
     const p = r && [...r.players.values()].find(x => x.key === key);
     if (!p || typeof cb !== 'function') return typeof cb === 'function' && cb({ err: 1 });
-    p.sid = s.id;
-    p.on = true;
-    p.off = 0;
-    s.data.code = r.code;
-    s.data.id = p.id;
+    p.sid = s.id; p.on = true; p.off = 0;
+    s.data.code = r.code; s.data.id = p.id;
     cb({ ok: 1 });
     push(r);
   });
 
   s.on('ready', () => {
     const [r, p] = me(s);
-    if (r && r.phase === 'lobby') {
-      p.ready = !p.ready;
-      push(r);
-    }
+    if (r && r.phase === 'lobby') { p.ready = !p.ready; push(r); }
   });
 
   s.on('catalog:add', (payload, cb) => {
@@ -1262,11 +1294,8 @@ io.on('connection', s => {
     if (kind === 'artist') {
       const n = clean(payload.name, 40);
       if (!n) return typeof cb === 'function' && cb({ ok: false, err: 'Sanatçı adı gerekli.' });
-      if (payload.region === 'en') {
-        if (!customCatalog.artistsEn.includes(n)) customCatalog.artistsEn.push(n);
-      } else {
-        if (!customCatalog.artistsTr.includes(n)) customCatalog.artistsTr.push(n);
-      }
+      if (payload.region === 'en') { if (!customCatalog.artistsEn.includes(n)) customCatalog.artistsEn.push(n); }
+      else { if (!customCatalog.artistsTr.includes(n)) customCatalog.artistsTr.push(n); }
       return typeof cb === 'function' && cb({ ok: true });
     }
     if (kind === 'series') {
@@ -1282,15 +1311,11 @@ io.on('connection', s => {
       const year = clamp(payload.year, 1950, 2026, 2020);
       const diff = ['easy', 'medium', 'hard'].includes(payload.difficulty) ? payload.difficulty : 'medium';
       customCatalog.music.push({
-        id: 'm_custom_' + Date.now(),
-        title,
-        artist,
+        id: 'm_custom_' + Date.now(), title, artist,
         lang: payload.lang === 'en' ? 'en' : 'tr',
         genres: [genre, 'Karışık'],
         decade: year >= 2020 ? "2020 ve sonrası" : year >= 2010 ? "2010'lar" : "2000'ler",
-        year,
-        d: diff,
-        pop: 'high'
+        year, d: diff, pop: 'high'
       });
       return typeof cb === 'function' && cb({ ok: true });
     }
@@ -1301,14 +1326,11 @@ io.on('connection', s => {
       const cat = clean(payload.category, 30) || 'Hollywood';
       const diff = ['easy', 'medium', 'hard'].includes(payload.difficulty) ? payload.difficulty : 'medium';
       customCatalog.films.push({
-        id: 'f_custom_' + Date.now(),
-        title,
-        year,
+        id: 'f_custom_' + Date.now(), title, year,
         region: cat === 'Türk Sineması' ? 'tr' : 'hollywood',
         categories: [cat, 'Yeni Filmler'],
         series: clean(payload.series, 50) || '',
-        d: diff,
-        pop: 'high',
+        d: diff, pop: 'high',
         images: String(payload.images || '').split(/\s+/).filter(u => /^https:\/\/[^\s<>"']{6,300}$/i.test(u)).slice(0, 8),
         answers: [norm(title)]
       });
@@ -1327,15 +1349,12 @@ io.on('connection', s => {
     const teamsCount = clamp(c.teams, 2, 4, 2);
     const imposterCount = clamp(c.imposterCount, 1, 3, 1);
     const wantsFilm = c.game === 'film' || (c.mixMode && Array.isArray(c.mixGames) && c.mixGames.includes('film'));
-    if (wantsFilm && !media.hasTmdb()) return s.emit('toast', 'Film oyunu için sunucuda TMDB_API_KEY tanımlı olmalı (Render → Environment).');
+    if (wantsFilm && !filmService.hasKey()) s.emit('toast', 'Uyarı: TMDB_API_KEY tanımlı değil; film oyunu başlatılamaz.');
 
     r.cfg = {
       difficulty,
       cats: sanitizeCats(c.cats, c.game),
-      rounds,
-      time,
-      teams: teamsCount,
-      imposterCount,
+      rounds, time, teams: teamsCount, imposterCount,
       imposterGuessBonus: c.imposterGuessBonus !== false,
       wwNight: clamp(c.wwNight, 10, 90, diffSec(25, difficulty)),
       wwDay: clamp(c.wwDay, 15, 180, 45),
@@ -1344,388 +1363,4 @@ io.on('connection', s => {
       filmFilter: sanitizeFilmFilter(c.filmFilter),
       wordLength: clamp(c.wordLength, 4, 7, 5),
       kelimeCategory: ['Tümü','İsim','Şehir','Ülke','Film','Sanatçı','Nesne'].includes(c.kelimeCategory) ? c.kelimeCategory : 'Tümü',
-      biggerCategory: ['Coğrafya','Hayvanlar','Bilim','Tarih','Spor','Film','Müzik','Genel kültür'].includes(c.biggerCategory) ? c.biggerCategory : '',
-    };
-
-    const ps = [...r.players.values()];
-    for (const x of ps) {
-      x.score = 0;
-      x.team = null;
-      x.spymaster = false;
-      x.role = null;
-      x.alive = true;
-      x.isImposter = false;
-      x.secretWord = null;
-    }
-    r.teams = [];
-    r.cn = null;
-    r.ww = null;
-    r.imp = null;
-    r.mix = null;
-
-    if (c.mixMode && Array.isArray(c.mixGames)) {
-      const validMix = [...new Set(c.mixGames)]
-        .filter(gid => MIX_ALLOWED.has(gid) && !MIX_FORBIDDEN.has(gid))
-        .slice(0, 8);
-      if (validMix.length < 2) return s.emit('toast', 'Karma Mod için en az 2 oyun seçmelisin.');
-      if (validMix.length >= 2) {
-        const perGame = clamp(c.mixRoundsPerGame, 1, 5, 2);
-        r.mix = {
-          active: true,
-          games: validMix,
-          step: 0,
-          roundsPerGame: perGame,
-          completedRounds: 0
-        };
-        r.game = validMix[0];
-        r.mode = 'solo';
-        r.round = 0;
-        startRound(r);
-        return;
-      }
-    }
-
-    const reqGame = ALL_GAMES.has(c.game) ? c.game : 'tf';
-    r.game = reqGame;
-
-    if (reqGame === 'codenames') {
-      r.round = 0;
-      startRound(r);
-      return;
-    }
-
-    if (reqGame === 'werewolf' || reqGame === 'imposter') {
-      r.mode = 'solo';
-      r.round = 0;
-      startRound(r);
-      return;
-    }
-
-    const n = Math.min(teamsCount, ps.length);
-    r.mode = c.mode === 'team' && n >= 2 ? 'team' : 'solo';
-    if (r.mode === 'team') {
-      r.teams = TEAMS.slice(0, n).map(([name, color]) => ({ name, color, score: 0 }));
-      shuffle(ps).forEach((x, i) => {
-        x.team = i % n;
-      });
-    }
-
-    r.round = 0;
-    startRound(r);
-  });
-
-  s.on('cn:swap_spy', () => {
-    const [r, p] = me(s);
-    if (!r || r.host !== p.id || r.phase !== 'question' || r.game !== 'codenames' || !r.cn) return;
-    [0, 1].forEach(tIdx => {
-      const teamPlayers = [...r.players.values()].filter(x => x.team === tIdx);
-      if (teamPlayers.length >= 2) {
-        const curIdx = teamPlayers.findIndex(x => x.spymaster);
-        teamPlayers.forEach(x => { x.spymaster = false; });
-        const nextIdx = (curIdx + 1) % teamPlayers.length;
-        teamPlayers[nextIdx].spymaster = true;
-      }
-    });
-    r.cn.log.push('Oda sahibi takım liderlerini güncelledi.');
-    push(r);
-  });
-
-  s.on('cn:clue', payload => {
-    const [r, p] = me(s);
-    if (!r || r.phase !== 'question' || r.game !== 'codenames' || !r.cn || r.cn.winnerTeam != null) return;
-    if (!p.spymaster || p.team !== r.cn.turnTeam || r.cn.clue) return;
-    if (!payload || typeof payload !== 'object') return;
-    const word = clean(payload.word, 24).toUpperCase();
-    const count = clamp(payload.count, 1, 9, 1);
-    if (!word) return;
-    r.cn.clue = { word, count, by: p.name };
-    r.cn.guessesLeft = count + 1;
-    r.cn.log.push(`${p.name} (${p.team === 0 ? 'Kırmızı' : 'Mavi'} Lider) ipucu verdi: "${word}" · ${count}`);
-    push(r);
-  });
-
-  s.on('cn:pick', idx => {
-    const [r, p] = me(s);
-    if (!r || r.phase !== 'question' || r.game !== 'codenames' || !r.cn || r.cn.winnerTeam != null) return;
-    if (p.spymaster || p.team !== r.cn.turnTeam || !r.cn.clue || r.cn.guessesLeft <= 0) return;
-    const card = r.cn.cards[+idx];
-    if (!card || card.revealed) return;
-
-    card.revealed = true;
-    card.byTeam = p.team;
-    if (card.type === 'red') r.cn.redLeft = Math.max(0, r.cn.redLeft - 1);
-    if (card.type === 'blue') r.cn.blueLeft = Math.max(0, r.cn.blueLeft - 1);
-
-    const mySide = p.team === 0 ? 'red' : 'blue';
-    const oppTeam = p.team === 0 ? 1 : 0;
-
-    if (card.type === 'assassin') {
-      r.cn.winnerTeam = oppTeam;
-      r.cn.reason = `${p.name} SİYAH KART ("${card.word}") seçti! ${oppTeam === 0 ? 'Kırmızı' : 'Mavi'} takım kazandı.`;
-      r.cn.log.push(r.cn.reason);
-      if (r.teams[oppTeam]) r.teams[oppTeam].score += 150;
-      finish(r);
-      return;
-    }
-
-    if (r.cn.redLeft === 0 || r.cn.blueLeft === 0) {
-      const winT = r.cn.redLeft === 0 ? 0 : 1;
-      r.cn.winnerTeam = winT;
-      r.cn.reason = `Tüm kelimeler bulundu! ${winT === 0 ? 'Kırmızı' : 'Mavi'} takım kazandı.`;
-      r.cn.log.push(r.cn.reason);
-      if (r.teams[winT]) r.teams[winT].score += 150;
-      finish(r);
-      return;
-    }
-
-    if (card.type === mySide) {
-      if (r.teams[p.team]) r.teams[p.team].score += 25;
-      r.cn.guessesLeft--;
-      r.cn.log.push(`${p.name} doğru kartı buldu: "${card.word}".`);
-      if (r.cn.guessesLeft <= 0) {
-        r.cn.clue = null;
-        r.cn.turnTeam = oppTeam;
-        r.cn.log.push(`Tahmin hakkı bitti; sıra ${oppTeam === 0 ? 'Kırmızı' : 'Mavi'} takıma geçti.`);
-      }
-    } else if (card.type === 'neutral') {
-      r.cn.clue = null;
-      r.cn.guessesLeft = 0;
-      r.cn.turnTeam = oppTeam;
-      r.cn.log.push(`${p.name} tarafsız kart ("${card.word}") seçti; sıra karşı takıma geçti.`);
-    } else {
-      if (r.teams[oppTeam]) r.teams[oppTeam].score += 35;
-      r.cn.clue = null;
-      r.cn.guessesLeft = 0;
-      r.cn.turnTeam = oppTeam;
-      r.cn.log.push(`${p.name} rakip kart ("${card.word}") seçti; rakip +35 puan aldı ve sıra geçti.`);
-    }
-    push(r);
-  });
-
-  s.on('cn:end_turn', () => {
-    const [r, p] = me(s);
-    if (!r || r.phase !== 'question' || r.game !== 'codenames' || !r.cn || r.cn.winnerTeam != null) return;
-    if (p.team !== r.cn.turnTeam) return;
-    r.cn.clue = null;
-    r.cn.guessesLeft = 0;
-    r.cn.turnTeam = r.cn.turnTeam === 0 ? 1 : 0;
-    r.cn.log.push(`Sıra devredildi → ${r.cn.turnTeam === 0 ? 'Kırmızı' : 'Mavi'} takım.`);
-    push(r);
-  });
-
-  s.on('ww:night_action', targetId => {
-    const [r, p] = me(s);
-    if (!r || r.phase !== 'question' || r.game !== 'werewolf' || !r.ww || r.ww.subPhase !== 'night') return;
-    if (!p.alive) return;
-    const target = r.players.get(String(targetId));
-    if (!target || !target.alive) return;
-
-    if (p.role === 'werewolf') {
-      r.ww.nightActions.wolfTarget = target.id;
-      r.ans.set(p.id, { v: target.id, t: Date.now() });
-    } else if (p.role === 'doctor') {
-      r.ww.nightActions.doctorSave = target.id;
-      r.ans.set(p.id, { v: target.id, t: Date.now() });
-    } else if (p.role === 'detective') {
-      r.ww.nightActions.detectiveCheck = target.id;
-      r.ans.set(p.id, { v: target.id, t: Date.now() });
-    }
-    push(r);
-  });
-
-  s.on('ww:vote', targetId => {
-    const [r, p] = me(s);
-    if (!r || r.phase !== 'question' || r.game !== 'werewolf' || !r.ww || r.ww.subPhase !== 'day_vote') return;
-    if (!p.alive) return;
-    const target = r.players.get(String(targetId));
-    if (!target || !target.alive) return;
-    r.ww.votes.set(p.id, target.id);
-    push(r);
-  });
-
-  s.on('imp:clue', text => {
-    const [r, p] = me(s);
-    if (!r || r.phase !== 'question' || r.game !== 'imposter' || !r.imp || r.imp.subPhase !== 'clues') return;
-    const t = clean(text, 60);
-    if (!t) return;
-    if (r.imp.clues.some(x => x.pid === p.id)) return;
-    r.imp.clues.push({ pid: p.id, name: p.name, av: p.av, text: t });
-    push(r);
-  });
-
-  s.on('imp:vote', targetId => {
-    const [r, p] = me(s);
-    if (!r || r.phase !== 'question' || r.game !== 'imposter' || !r.imp || r.imp.subPhase !== 'vote') return;
-    const target = r.players.get(String(targetId));
-    if (!target) return;
-    r.imp.votes.set(p.id, target.id);
-    const activeCount = activePlayers(r).length;
-    if (r.imp.votes.size >= activeCount && activeCount > 0) {
-      resolveImposterVote(r);
-    } else {
-      push(r);
-    }
-  });
-
-  s.on('imp:guess', word => {
-    const [r, p] = me(s);
-    if (!r || r.phase !== 'question' || r.game !== 'imposter' || !r.imp || r.imp.subPhase !== 'guess_common') return;
-    if (!p.isImposter || r.imp.guessAttempted) return;
-    r.imp.guessAttempted = true;
-    const guessedCorrectly = norm(word) === norm(r.imp.commonWord);
-    finalizeImposterResult(r, !guessedCorrectly);
-  });
-
-  s.on('wordle:guess', raw => {
-    const [r,p] = me(s); if (!r || r.phase !== 'question' || r.game !== 'wordle' || !r.wordle || r.wordle.solved.has(p.id)) return;
-    const guess = clean(raw, 12).toLocaleUpperCase('tr-TR');
-    const chars = [...guess], target = [...r.wordle.target];
-    if (chars.length !== target.length || !/^[A-ZÇĞİÖŞÜ]+$/u.test(guess)) return s.emit('toast','Kelime uzunluğu uygun olmalı; yalnızca Türkçe harf kullan.');
-    const list = r.wordle.guesses.get(p.id) || []; if (list.length >= r.wordle.maxAttempts) return;
-    if (list.some(x => x.word === guess)) return s.emit('toast','Aynı tahmini tekrar gönderemezsin.');
-    const marks = Array(chars.length).fill('absent'); const remaining = {};
-    target.forEach((ch,i) => { if(chars[i]===ch) marks[i]='correct'; else remaining[ch]=(remaining[ch]||0)+1; });
-    chars.forEach((ch,i) => { if(marks[i]==='correct') return; if(remaining[ch]>0){marks[i]='present';remaining[ch]--;} });
-    list.push({word:guess,marks}); r.wordle.guesses.set(p.id,list);
-    if (guess === r.wordle.target) r.wordle.solved.set(p.id,{time:Date.now(),attempt:list.length});
-    if ([...r.players.values()].every(x => r.wordle.solved.has(x.id) || (r.wordle.guesses.get(x.id)||[]).length >= r.wordle.maxAttempts)) reveal(r); else push(r);
-  });
-
-  s.on('palavra:bluff', raw => {
-    const [r,p] = me(s); if(!r || r.phase!=='question' || r.game!=='palavra' || !r.palavra || r.palavra.phase!=='bluff' || r.palavra.fake.has(p.id)) return;
-    const txt=clean(raw,100); if(!txt || norm(txt)===norm(r.palavra.real)) return s.emit('toast','Gerçek cevabı yazma; inandırıcı bir yanlış cevap oluştur.');
-    r.palavra.fake.set(p.id,txt);
-    if(r.palavra.fake.size===r.players.size) beginPalavraVote(r);
-    else push(r);
-  });
-
-  s.on('palavra:vote', idx => {
-    const [r,p]=me(s); if(!r || r.phase!=='question' || r.game!=='palavra' || !r.palavra || r.palavra.phase!=='vote' || r.palavra.votes.has(p.id)) return;
-    const n=Number(idx); if(!Number.isInteger(n)||n<0||n>=r.palavra.options.length) return;
-    r.palavra.votes.set(p.id,n); if(r.palavra.votes.size===r.players.size) reveal(r); else push(r);
-  });
-
-  s.on('bag:judge', pid => {
-    const [r,p]=me(s); if(!r || r.host!==p.id || r.phase!=='reveal' || r.game!=='bagdastirici' || !r.bag || !r.bag.answers.has(pid)) return;
-    if(r.bag.judged.has(pid)) return; r.bag.judged.add(pid);
-    const player=r.players.get(pid); if(player) givePoints(r,player,100);
-    const row=r.rev && r.rev.rows.find(x=>r.players.get(pid) && x.n===r.players.get(pid).name); if(row) row.pts=100;
-    push(r);
-  });
-
-  s.on('answer', v => {
-    const [r, p] = me(s);
-    if (!r || r.phase !== 'question') return;
-    if (['codenames', 'werewolf', 'imposter', 'wordle', 'palavra'].includes(r.game)) return;
-
-    const k = akey(r, p);
-    if (r.ans.has(k)) return;
-
-    if (r.q && r.q.loading) return;
-    if ((r.game === 'song' || r.game === 'film' || r.game === 'pixel') && r.penaltyUntil && (r.penaltyUntil.get(p.id) || 0) > Date.now()) {
-      return;
-    }
-
-    if (r.game === 'tf' || r.game === 'quiz' || r.game === 'liar' || r.game === 'wyr' || r.game === 'ml' || r.game === 'survey' || r.game === 'bigger') {
-      const optLen = (r.q && Array.isArray(r.q.o)) ? r.q.o.length : 0;
-      if (typeof v !== 'number' || !Number.isInteger(v) || v < 0 || v >= optLen) return;
-      r.ans.set(k, { v, t: Date.now() });
-    } else if (r.game === 'closest') {
-      const num = Number(v);
-      if (!Number.isFinite(num) || Math.abs(num) > 1e12) return;
-      r.ans.set(k, { v: num, t: Date.now() });
-    } else if (r.game === 'emoji' || r.game === 'song' || r.game === 'film' || r.game === 'pixel' || r.game === 'kelimelik' || r.game === 'bagdastirici') {
-      const txt = clean(v, 100);
-      if (!txt) return;
-      if (r.game === 'bagdastirici') {
-        if (!r.bag || r.bag.answers.has(p.id)) return;
-        r.bag.answers.set(p.id,{v:txt,t:Date.now()});
-        if (r.bag.accepted.some(a => norm(txt) === a || (a.length >= 5 && norm(txt).includes(a)))) r.bag.judged.add(p.id);
-        r.ans.set(k,{v:txt,t:Date.now()});
-      } else {
-        const ok = checkTextGuessMatch(r.game, r.q, txt);
-        if (ok) {
-          r.ans.set(k, { v: txt, ok: true, t: Date.now(), fi: (r.q && r.q.sceneIndex) || 0 });
-          if (r.game === 'kelimelik' && r.kelimelik) r.kelimelik.solved.set(p.id,{time:Date.now(),answer:txt});
-        } else {
-          if (r.game === 'song' || r.game === 'film' || r.game === 'pixel') {
-            r.penaltyUntil.set(p.id, Date.now() + 3000);
-            s.emit('toast', 'Yanlış tahmin! 3 sn bekleme cezası.');
-            push(r);
-            return;
-          }
-          if (r.game === 'kelimelik') { s.emit('toast','Bu kelime değil, tekrar dene!'); push(r); return; }
-          r.ans.set(k, { v: txt, ok: false, t: Date.now() });
-        }
-      }
-    }
-
-    if (allDone(r)) reveal(r);
-    else push(r);
-  });
-
-  s.on('stop', () => {
-    const [r, p] = me(s);
-    if (!r || r.host !== p.id) return;
-    if (r.phase === 'end') toLobby(r);
-    else if (r.phase !== 'lobby') finish(r);
-  });
-
-  s.on('reset', () => {
-    const [r, p] = me(s);
-    if (!r || r.host !== p.id) return;
-    for (const x of r.players.values()) {
-      x.night = 0;
-      x.score = 0;
-    }
-    push(r);
-  });
-
-  s.on('kick', id => {
-    const [r, p] = me(s);
-    if (!r || r.host !== p.id || id === p.id) return;
-    const t = r.players.get(id);
-    if (!t) return;
-    if (t.sid) io.to(t.sid).emit('kicked');
-    leave(r, t);
-  });
-
-  s.on('leave', () => {
-    const [r, p] = me(s);
-    if (r) leave(r, p);
-    s.data = {};
-  });
-
-  s.on('disconnect', () => {
-    const [r, p] = me(s);
-    if (!r || p.sid !== s.id) return;
-    p.on = false;
-    p.off = Date.now();
-    if (r.host === p.id) {
-      const n = [...r.players.values()].find(x => x.on);
-      if (n) r.host = n.id;
-    }
-    if (r.phase === 'question' && allDone(r)) reveal(r);
-    else push(r);
-  });
-});
-
-setInterval(() => {
-  const now = Date.now();
-  for (const [c, r] of rooms) {
-    if ([...r.players.values()].some(p => p.on)) {
-      r.idle = now;
-      if (r.phase === 'lobby') {
-        for (const p of [...r.players.values()]) {
-          if (!p.on && p.off && now - p.off > 120000) leave(r, p);
-        }
-      }
-    } else if (now - r.idle > 300000) {
-      clearTimeout(r.timer);
-      clearTimeout(r.sceneTimer);
-      rooms.delete(c);
-    }
-  }
-}, 30000);
-
-srv.listen(PORT, '0.0.0.0', () => console.log('Parti Odası hazır: http://localhost:' + PORT));
+      biggerCategory: ['Coğrafya','Hayvanlar','Bilim','Tarih','Spor','
