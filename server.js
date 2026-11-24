@@ -1364,3 +1364,410 @@ io.on('connection', s => {
       wordLength: clamp(c.wordLength, 4, 7, 5),
       kelimeCategory: ['Tümü','İsim','Şehir','Ülke','Film','Sanatçı','Nesne'].includes(c.kelimeCategory) ? c.kelimeCategory : 'Tümü',
       biggerCategory: ['Coğrafya','Hayvanlar','Bilim','Tarih','Spor','
+biggerCategory: ['Coğrafya','Hayvanlar','Bilim','Tarih','Spor','Film','Müzik','Genel kültür'].includes(c.biggerCategory) ? c.biggerCategory : '',
+    };
+
+    const ps = [...r.players.values()];
+    for (const x of ps) {
+      x.score = 0;
+      x.team = null;
+      x.spymaster = false;
+      x.role = null;
+      x.alive = true;
+      x.isImposter = false;
+      x.secretWord = null;
+    }
+    r.teams = [];
+    r.cn = null;
+    r.ww = null;
+    r.imp = null;
+    r.mix = null;
+
+    if (c.mixMode && Array.isArray(c.mixGames)) {
+      const validMix = [...new Set(c.mixGames)]
+        .filter(gid => MIX_ALLOWED.has(gid) && !MIX_FORBIDDEN.has(gid))
+        .slice(0, 8);
+      if (validMix.length < 2) return s.emit('toast', 'Karma Mod için en az 2 oyun seçmelisin.');
+      if (validMix.length >= 2) {
+        const perGame = clamp(c.mixRoundsPerGame, 1, 5, 2);
+        r.mix = {
+          active: true,
+          games: validMix,
+          step: 0,
+          roundsPerGame: perGame,
+          completedRounds: 0
+        };
+        r.game = validMix[0];
+        r.mode = 'solo';
+        r.round = 0;
+        startRound(r);
+        return;
+      }
+    }
+
+    const reqGame = ALL_GAMES.has(c.game) ? c.game : 'tf';
+    r.game = reqGame;
+
+    if (reqGame === 'codenames') {
+      r.round = 0;
+      startRound(r);
+      return;
+    }
+
+    if (reqGame === 'werewolf' || reqGame === 'imposter') {
+      r.mode = 'solo';
+      r.round = 0;
+      startRound(r);
+      return;
+    }
+
+    const n = Math.min(teamsCount, ps.length);
+    r.mode = c.mode === 'team' && n >= 2 ? 'team' : 'solo';
+    if (r.mode === 'team') {
+      r.teams = TEAMS.slice(0, n).map(([name, color]) => ({ name, color, score: 0 }));
+      shuffle(ps).forEach((x, i) => {
+        x.team = i % n;
+      });
+    }
+
+    r.round = 0;
+    startRound(r);
+  });
+
+  s.on('cn:swap_spy', () => {
+    const [r, p] = me(s);
+    if (!r || r.host !== p.id || r.phase !== 'question' || r.game !== 'codenames' || !r.cn) return;
+    [0, 1].forEach(tIdx => {
+      const teamPlayers = [...r.players.values()].filter(x => x.team === tIdx);
+      if (teamPlayers.length >= 2) {
+        const curIdx = teamPlayers.findIndex(x => x.spymaster);
+        teamPlayers.forEach(x => { x.spymaster = false; });
+        const nextIdx = (curIdx + 1) % teamPlayers.length;
+        teamPlayers[nextIdx].spymaster = true;
+      }
+    });
+    r.cn.log.push('Oda sahibi takım liderlerini güncelledi.');
+    push(r);
+  });
+
+  s.on('cn:clue', payload => {
+    const [r, p] = me(s);
+    if (!r || r.phase !== 'question' || r.game !== 'codenames' || !r.cn || r.cn.winnerTeam != null) return;
+    if (!p.spymaster || p.team !== r.cn.turnTeam || r.cn.clue) return;
+    if (!payload || typeof payload !== 'object') return;
+    const word = clean(payload.word, 24).toUpperCase();
+    const count = clamp(payload.count, 1, 9, 1);
+    if (!word) return;
+    r.cn.clue = { word, count, by: p.name };
+    r.cn.guessesLeft = count + 1;
+    r.cn.log.push(`${p.name} (${p.team === 0 ? 'Kırmızı' : 'Mavi'} Lider) ipucu verdi: "${word}" · ${count}`);
+    push(r);
+  });
+
+  s.on('cn:pick', idx => {
+    const [r, p] = me(s);
+    if (!r || r.phase !== 'question' || r.game !== 'codenames' || !r.cn || r.cn.winnerTeam != null) return;
+    if (p.spymaster || p.team !== r.cn.turnTeam || !r.cn.clue || r.cn.guessesLeft <= 0) return;
+    const card = r.cn.cards[+idx];
+    if (!card || card.revealed) return;
+
+    card.revealed = true;
+    card.byTeam = p.team;
+    if (card.type === 'red') r.cn.redLeft = Math.max(0, r.cn.redLeft - 1);
+    if (card.type === 'blue') r.cn.blueLeft = Math.max(0, r.cn.blueLeft - 1);
+
+    const mySide = p.team === 0 ? 'red' : 'blue';
+    const oppTeam = p.team === 0 ? 1 : 0;
+
+    if (card.type === 'assassin') {
+      r.cn.winnerTeam = oppTeam;
+      r.cn.reason = `${p.name} SİYAH KART ("${card.word}") seçti! ${oppTeam === 0 ? 'Kırmızı' : 'Mavi'} takım kazandı.`;
+      r.cn.log.push(r.cn.reason);
+      if (r.teams[oppTeam]) r.teams[oppTeam].score += 150;
+      finish(r);
+      return;
+    }
+
+    if (r.cn.redLeft === 0 || r.cn.blueLeft === 0) {
+      const winT = r.cn.redLeft === 0 ? 0 : 1;
+      r.cn.winnerTeam = winT;
+      r.cn.reason = `Tüm kelimeler bulundu! ${winT === 0 ? 'Kırmızı' : 'Mavi'} takım kazandı.`;
+      r.cn.log.push(r.cn.reason);
+      if (r.teams[winT]) r.teams[winT].score += 150;
+      finish(r);
+      return;
+    }
+
+    if (card.type === mySide) {
+      if (r.teams[p.team]) r.teams[p.team].score += 25;
+      r.cn.guessesLeft--;
+      r.cn.log.push(`${p.name} doğru kartı buldu: "${card.word}".`);
+      if (r.cn.guessesLeft <= 0) {
+        r.cn.clue = null;
+        r.cn.turnTeam = oppTeam;
+        r.cn.log.push(`Tahmin hakkı bitti; sıra ${oppTeam === 0 ? 'Kırmızı' : 'Mavi'} takıma geçti.`);
+      }
+    } else if (card.type === 'neutral') {
+      r.cn.clue = null;
+      r.cn.guessesLeft = 0;
+      r.cn.turnTeam = oppTeam;
+      r.cn.log.push(`${p.name} tarafsız kart ("${card.word}") seçti; sıra karşı takıma geçti.`);
+    } else {
+      if (r.teams[oppTeam]) r.teams[oppTeam].score += 35;
+      r.cn.clue = null;
+      r.cn.guessesLeft = 0;
+      r.cn.turnTeam = oppTeam;
+      r.cn.log.push(`${p.name} rakip kart ("${card.word}") seçti; rakip +35 puan aldı ve sıra geçti.`);
+    }
+    push(r);
+  });
+
+  s.on('cn:end_turn', () => {
+    const [r, p] = me(s);
+    if (!r || r.phase !== 'question' || r.game !== 'codenames' || !r.cn || r.cn.winnerTeam != null) return;
+    if (p.team !== r.cn.turnTeam) return;
+    r.cn.clue = null;
+    r.cn.guessesLeft = 0;
+    r.cn.turnTeam = r.cn.turnTeam === 0 ? 1 : 0;
+    r.cn.log.push(`Sıra devredildi → ${r.cn.turnTeam === 0 ? 'Kırmızı' : 'Mavi'} takım.`);
+    push(r);
+  });
+
+  s.on('ww:night_action', targetId => {
+    const [r, p] = me(s);
+    if (!r || r.phase !== 'question' || r.game !== 'werewolf' || !r.ww || r.ww.subPhase !== 'night') return;
+    if (!p.alive) return;
+    const target = r.players.get(String(targetId));
+    if (!target || !target.alive) return;
+
+    if (p.role === 'werewolf') {
+      r.ww.nightActions.wolfTarget = target.id;
+      r.ans.set(p.id, { v: target.id, t: Date.now() });
+    } else if (p.role === 'doctor') {
+      r.ww.nightActions.doctorSave = target.id;
+      r.ans.set(p.id, { v: target.id, t: Date.now() });
+    } else if (p.role === 'detective') {
+      r.ww.nightActions.detectiveCheck = target.id;
+      r.ans.set(p.id, { v: target.id, t: Date.now() });
+    }
+    push(r);
+  });
+
+  s.on('ww:vote', targetId => {
+    const [r, p] = me(s);
+    if (!r || r.phase !== 'question' || r.game !== 'werewolf' || !r.ww || r.ww.subPhase !== 'day_vote') return;
+    if (!p.alive) return;
+    const target = r.players.get(String(targetId));
+    if (!target || !target.alive) return;
+    r.ww.votes.set(p.id, target.id);
+    push(r);
+  });
+
+  s.on('imp:clue', text => {
+    const [r, p] = me(s);
+    if (!r || r.phase !== 'question' || r.game !== 'imposter' || !r.imp || r.imp.subPhase !== 'clues') return;
+    const t = clean(text, 60);
+    if (!t) return;
+    if (r.imp.clues.some(x => x.pid === p.id)) return;
+    r.imp.clues.push({ pid: p.id, name: p.name, av: p.av, text: t });
+    push(r);
+  });
+
+  s.on('imp:vote', targetId => {
+    const [r, p] = me(s);
+    if (!r || r.phase !== 'question' || r.game !== 'imposter' || !r.imp || r.imp.subPhase !== 'vote') return;
+    const target = r.players.get(String(targetId));
+    if (!target) return;
+    r.imp.votes.set(p.id, target.id);
+    const activeCount = activePlayers(r).length;
+    if (r.imp.votes.size >= activeCount && activeCount > 0) {
+      resolveImposterVote(r);
+    } else {
+      push(r);
+    }
+  });
+
+  s.on('imp:guess', word => {
+    const [r, p] = me(s);
+    if (!r || r.phase !== 'question' || r.game !== 'imposter' || !r.imp || r.imp.subPhase !== 'guess_common') return;
+    if (!p.isImposter || r.imp.guessAttempted) return;
+    r.imp.guessAttempted = true;
+    const guessedCorrectly = norm(word) === norm(r.imp.commonWord);
+    finalizeImposterResult(r, !guessedCorrectly);
+  });
+
+  s.on('wordle:guess', raw => {
+    const [r,p] = me(s);
+    if (!r || r.phase !== 'question' || r.game !== 'wordle' || !r.wordle || r.wordle.solved.has(p.id)) return;
+    const guess = clean(raw, 12).toLocaleUpperCase('tr-TR');
+    const chars = [...guess], target = [...r.wordle.target];
+    if (chars.length !== target.length || !/^[A-ZÇĞİÖŞÜ]+$/u.test(guess)) return s.emit('toast','Kelime uzunluğu uygun olmalı; yalnızca Türkçe harf kullan.');
+    const list = r.wordle.guesses.get(p.id) || [];
+    if (list.length >= r.wordle.maxAttempts) return;
+    if (list.some(x => x.word === guess)) return s.emit('toast','Aynı tahmini tekrar gönderemezsin.');
+    const marks = Array(chars.length).fill('absent');
+    const remaining = {};
+    target.forEach((ch,i) => { if(chars[i]===ch) marks[i]='correct'; else remaining[ch]=(remaining[ch]||0)+1; });
+    chars.forEach((ch,i) => {
+      if(marks[i]==='correct') return;
+      if(remaining[ch]>0){marks[i]='present';remaining[ch]--;}
+    });
+    list.push({word:guess,marks});
+    r.wordle.guesses.set(p.id,list);
+    if (guess === r.wordle.target) r.wordle.solved.set(p.id,{time:Date.now(),attempt:list.length});
+    if ([...r.players.values()].every(x => r.wordle.solved.has(x.id) || (r.wordle.guesses.get(x.id)||[]).length >= r.wordle.maxAttempts)) reveal(r);
+    else push(r);
+  });
+
+  s.on('palavra:bluff', raw => {
+    const [r,p] = me(s);
+    if(!r || r.phase!=='question' || r.game!=='palavra' || !r.palavra || r.palavra.phase!=='bluff' || r.palavra.fake.has(p.id)) return;
+    const txt=clean(raw,100);
+    if(!txt || norm(txt)===norm(r.palavra.real)) return s.emit('toast','Gerçek cevabı yazma; inandırıcı bir yanlış cevap oluştur.');
+    r.palavra.fake.set(p.id,txt);
+    if(r.palavra.fake.size===r.players.size) beginPalavraVote(r);
+    else push(r);
+  });
+
+  s.on('palavra:vote', idx => {
+    const [r,p]=me(s);
+    if(!r || r.phase!=='question' || r.game!=='palavra' || !r.palavra || r.palavra.phase!=='vote' || r.palavra.votes.has(p.id)) return;
+    const n=Number(idx);
+    if(!Number.isInteger(n)||n<0||n>=r.palavra.options.length) return;
+    r.palavra.votes.set(p.id,n);
+    if(r.palavra.votes.size===r.players.size) reveal(r);
+    else push(r);
+  });
+
+  s.on('bag:judge', pid => {
+    const [r,p]=me(s);
+    if(!r || r.host!==p.id || r.phase!=='reveal' || r.game!=='bagdastirici' || !r.bag || !r.bag.answers.has(pid)) return;
+    if(r.bag.judged.has(pid)) return;
+    r.bag.judged.add(pid);
+    const player=r.players.get(pid);
+    if(player) givePoints(r,player,100);
+    const row=r.rev && r.rev.rows.find(x=>r.players.get(pid) && x.n===r.players.get(pid).name);
+    if(row) row.pts=100;
+    push(r);
+  });
+
+  s.on('answer', v => {
+    const [r, p] = me(s);
+    if (!r || r.phase !== 'question') return;
+    if (['codenames', 'werewolf', 'imposter', 'wordle', 'palavra'].includes(r.game)) return;
+
+    const k = akey(r, p);
+    if (r.ans.has(k)) return;
+
+    if (r.q && r.q.loading) return;
+    if ((r.game === 'song' || r.game === 'film' || r.game === 'pixel') && r.penaltyUntil && (r.penaltyUntil.get(p.id) || 0) > Date.now()) {
+      return;
+    }
+
+    if (r.game === 'tf' || r.game === 'quiz' || r.game === 'liar' || r.game === 'wyr' || r.game === 'ml' || r.game === 'survey' || r.game === 'bigger' || ['logo','celebrity','celebritytr','celebrityworld','footballer','clublogo','flag','universe'].includes(r.game)) {
+      const optLen = (r.q && Array.isArray(r.q.o)) ? r.q.o.length : 0;
+      if (typeof v !== 'number' || !Number.isInteger(v) || v < 0 || v >= optLen) return;
+      r.ans.set(k, { v, t: Date.now() });
+    } else if (r.game === 'closest') {
+      const num = Number(v);
+      if (!Number.isFinite(num) || Math.abs(num) > 1e12) return;
+      r.ans.set(k, { v: num, t: Date.now() });
+    } else if (r.game === 'emoji' || r.game === 'song' || r.game === 'film' || r.game === 'pixel' || r.game === 'kelimelik' || r.game === 'bagdastirici') {
+      const txt = clean(v, 100);
+      if (!txt) return;
+      if (r.game === 'bagdastirici') {
+        if (!r.bag || r.bag.answers.has(p.id)) return;
+        r.bag.answers.set(p.id,{v:txt,t:Date.now()});
+        if (r.bag.accepted.some(a => norm(txt) === a || (a.length >= 5 && norm(txt).includes(a)))) r.bag.judged.add(p.id);
+        r.ans.set(k,{v:txt,t:Date.now()});
+      } else {
+        const ok = checkTextGuessMatch(r.game, r.q, txt);
+        if (ok) {
+          r.ans.set(k, { v: txt, ok: true, t: Date.now(), fi: (r.q && r.q.sceneIndex) || 0 });
+          if (r.game === 'kelimelik' && r.kelimelik) r.kelimelik.solved.set(p.id,{time:Date.now(),answer:txt});
+        } else {
+          if (r.game === 'song' || r.game === 'film' || r.game === 'pixel') {
+            r.penaltyUntil.set(p.id, Date.now() + 3000);
+            s.emit('toast', 'Yanlış tahmin! 3 sn bekleme cezası.');
+            push(r);
+            return;
+          }
+          if (r.game === 'kelimelik') {
+            s.emit('toast','Bu kelime değil, tekrar dene!');
+            push(r);
+            return;
+          }
+          r.ans.set(k, { v: txt, ok: false, t: Date.now() });
+        }
+      }
+    }
+
+    if (allDone(r)) reveal(r);
+    else push(r);
+  });
+
+  s.on('stop', () => {
+    const [r, p] = me(s);
+    if (!r || r.host !== p.id) return;
+    if (r.phase === 'end') toLobby(r);
+    else if (r.phase !== 'lobby') finish(r);
+  });
+
+  s.on('reset', () => {
+    const [r, p] = me(s);
+    if (!r || r.host !== p.id) return;
+    for (const x of r.players.values()) {
+      x.night = 0;
+      x.score = 0;
+    }
+    push(r);
+  });
+
+  s.on('kick', id => {
+    const [r, p] = me(s);
+    if (!r || r.host !== p.id || id === p.id) return;
+    const t = r.players.get(id);
+    if (!t) return;
+    if (t.sid) io.to(t.sid).emit('kicked');
+    leave(r, t);
+  });
+
+  s.on('leave', () => {
+    const [r, p] = me(s);
+    if (r) leave(r, p);
+    s.data = {};
+  });
+
+  s.on('disconnect', () => {
+    const [r, p] = me(s);
+    if (!r || p.sid !== s.id) return;
+    p.on = false;
+    p.off = Date.now();
+    if (r.host === p.id) {
+      const n = [...r.players.values()].find(x => x.on);
+      if (n) r.host = n.id;
+    }
+    if (r.phase === 'question' && allDone(r)) reveal(r);
+    else push(r);
+  });
+});
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [c, r] of rooms) {
+    if ([...r.players.values()].some(p => p.on)) {
+      r.idle = now;
+      if (r.phase === 'lobby') {
+        for (const p of [...r.players.values()]) {
+          if (!p.on && p.off && now - p.off > 120000) leave(r, p);
+        }
+      }
+    } else if (now - r.idle > 300000) {
+      clearTimeout(r.timer);
+      clearTimeout(r.sceneTimer);
+      rooms.delete(c);
+    }
+  }
+}, 30000);
+
+srv.listen(PORT, '0.0.0.0', () => console.log('Parti Odası hazır: http://localhost:' + PORT));
