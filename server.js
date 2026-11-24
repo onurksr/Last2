@@ -13,7 +13,6 @@ const bonus = require('./data/bonus-content');
 const expansion = require('./data/content-expansion');
 const pixelPool = require('./data/pixel-pool');
 const newGames = require('./data/new-games');
-const musicExpansion = require('./data/music-expansion');
 const visualGames = require('./data/visual-games');
 
 const fmtCn = (() => {
@@ -59,7 +58,7 @@ const rooms = new Map();
 
 const customCatalog = {
   music: (() => {
-    const all = [...bank.MUSIC_BANK.map(({ notes, ...m }) => m), ...extra.MUSIC, ...musicExpansion];
+    const all = [...bank.MUSIC_BANK.map(({ notes, ...m }) => m), ...extra.MUSIC];
     const seen = new Set();
     return all.filter(m => {
       const k = `${String(m.title).toLocaleLowerCase('tr')}|${String(m.artist).toLocaleLowerCase('tr')}`;
@@ -75,7 +74,7 @@ const customCatalog = {
     medium: [...bank.CODENAMES_WORDS.medium],
     hard: [...bank.CODENAMES_WORDS.hard],
   },
-  artistsTr: [...new Set([...bank.TURKISH_ARTISTS, ...extra.ARTISTS_TR, ...musicExpansion.map(x => x.artist)])],
+  artistsTr: [...new Set([...bank.TURKISH_ARTISTS, ...extra.ARTISTS_TR])],
   artistsEn: [...new Set([...bank.FOREIGN_ARTISTS, ...extra.ARTISTS_EN])],
   musicCategories: [...new Set([...bank.MUSIC_CATEGORIES, 'Türkçe Rock'])],
   filmCategories: [...newFilmPool.CATEGORIES],
@@ -680,7 +679,6 @@ async function startVisualRound(r, gameId, sec, diff) {
 
 const FRAME_PTS = [100, 80, 60, 40, 20];
 
-// ==== YENİ: Kareden Film Bilme (TMDB tabanlı) ====
 async function startFilmRound(r, sec, diff) {
   const round = r.round;
   const token = (r.mtoken = (r.mtoken || 0) + 1);
@@ -1363,8 +1361,7 @@ io.on('connection', s => {
       filmFilter: sanitizeFilmFilter(c.filmFilter),
       wordLength: clamp(c.wordLength, 4, 7, 5),
       kelimeCategory: ['Tümü','İsim','Şehir','Ülke','Film','Sanatçı','Nesne'].includes(c.kelimeCategory) ? c.kelimeCategory : 'Tümü',
-    
-biggerCategory: ['Coğrafya','Hayvanlar','Bilim','Tarih','Spor','Film','Müzik','Genel kültür'].includes(c.biggerCategory) ? c.biggerCategory : '',
+      biggerCategory: ['Coğrafya','Hayvanlar','Bilim','Tarih','Spor','Film','Müzik','Genel kültür'].includes(c.biggerCategory) ? c.biggerCategory : '',
     };
 
     const ps = [...r.players.values()];
