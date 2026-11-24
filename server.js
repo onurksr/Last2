@@ -1363,7 +1363,7 @@ io.on('connection', s => {
       filmFilter: sanitizeFilmFilter(c.filmFilter),
       wordLength: clamp(c.wordLength, 4, 7, 5),
       kelimeCategory: ['Tümü','İsim','Şehir','Ülke','Film','Sanatçı','Nesne'].includes(c.kelimeCategory) ? c.kelimeCategory : 'Tümü',
-      biggerCategory: ['Coğrafya','Hayvanlar','Bilim','Tarih','Spor','
+    
 biggerCategory: ['Coğrafya','Hayvanlar','Bilim','Tarih','Spor','Film','Müzik','Genel kültür'].includes(c.biggerCategory) ? c.biggerCategory : '',
     };
 
